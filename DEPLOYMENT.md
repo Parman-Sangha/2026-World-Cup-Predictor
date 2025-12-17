@@ -1,133 +1,106 @@
-# 🚀 Deploying Your World Cup Predictor to Render
+# 🚀 Deploy to Vercel + Railway (100% Free, No Credit Card)
 
-This guide will help you deploy your app for **free** on Render.com.
-
-## Prerequisites
-
-- GitHub account
-- Render account (free) - Sign up at [render.com](https://render.com)
+Quick guide to deploy your World Cup Predictor for free using Vercel (frontend) and Railway (backend).
 
 ---
 
-## Step 1: Push Your Code to GitHub
+## Part 1: Deploy Backend on Railway
 
-If you haven't already, create a GitHub repository and push your code:
+### Step 1: Sign Up for Railway
+1. Go to **https://railway.app**
+2. Click **"Login"** → **"Login with GitHub"**
+3. Authorize Railway to access your GitHub
 
-```bash
-cd /Users/parmansangha/2026-World-Cup-Predictor
+### Step 2: Deploy Backend
+1. Click **"New Project"**
+2. Select **"Deploy from GitHub repo"**
+3. Choose **`Parman-Sangha/2026-World-Cup-Predictor`**
+4. Railway will detect it's a Python project
+5. Click **"Add variables"** and set:
+   - **Root Directory**: `backend`
+6. Click **"Deploy"**
+7. Wait ~2 minutes for deployment
 
-# Initialize git (if not already done)
-git init
-
-# Add all files
-git add .
-
-# Commit
-git commit -m "Prepare for deployment"
-
-# Create a new repository on GitHub, then:
-git remote add origin https://github.com/YOUR_USERNAME/2026-World-Cup-Predictor.git
-git branch -M main
-git push -u origin main
-```
+### Step 3: Get Backend URL
+1. Go to your project → **Settings** → **Networking**
+2. Click **"Generate Domain"**
+3. **Copy the URL** (e.g., `https://your-app.up.railway.app`)
 
 ---
 
-## Step 2: Deploy to Render
+## Part 2: Deploy Frontend on Vercel
 
-### Option A: One-Click Deploy with Blueprint (Recommended)
+### Step 1: Sign Up for Vercel
+1. Go to **https://vercel.com/signup**
+2. Click **"Continue with GitHub"**
+3. Authorize Vercel
 
-1. **Go to Render Dashboard**: https://dashboard.render.com
-2. **Click "New" → "Blueprint"**
-3. **Connect your GitHub repository**
-4. **Select the repository**: `2026-World-Cup-Predictor`
-5. Render will automatically detect the `render.yaml` file
-6. **Click "Apply"** to deploy both services
-
-### Option B: Manual Deploy
-
-If the blueprint doesn't work, deploy manually:
-
-#### Deploy Backend:
-1. Click **"New +" → "Web Service"**
-2. Connect your GitHub repo
+### Step 2: Deploy Frontend
+1. Click **"Add New..."** → **"Project"**
+2. Import **`Parman-Sangha/2026-World-Cup-Predictor`**
 3. Configure:
-   - **Name**: `worldcup-predictor-api`
-   - **Runtime**: Python 3
-   - **Build Command**: `pip install -r backend/requirements.txt`
-   - **Start Command**: `cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT`
-   - **Plan**: Free
-4. Click **"Create Web Service"**
-5. **Copy the backend URL** (e.g., `https://worldcup-predictor-api.onrender.com`)
-
-#### Deploy Frontend:
-1. Click **"New +" → "Static Site"**
-2. Connect your GitHub repo
-3. Configure:
-   - **Name**: `worldcup-predictor-frontend`
-   - **Build Command**: `cd frontend && npm install && npm run build`
-   - **Publish Directory**: `frontend/dist`
+   - **Framework Preset**: Vite
+   - **Root Directory**: Leave as `./` (Vercel will use `vercel.json`)
 4. **Add Environment Variable**:
-   - Key: `VITE_API_URL`
-   - Value: `https://worldcup-predictor-api.onrender.com` (your backend URL from step 5)
-5. Click **"Create Static Site"**
+   - **Name**: `VITE_API_URL`
+   - **Value**: (paste your Railway backend URL from Part 1, Step 3)
+5. Click **"Deploy"**
+6. Wait ~1 minute
 
 ---
 
-## Step 3: Wait for Deployment
+## Part 3: Test Your Live App! 🎉
 
-- Backend: ~2-3 minutes
-- Frontend: ~1-2 minutes
-
-You'll see build logs in real-time. Once complete, you'll get URLs like:
-- **Backend**: `https://worldcup-predictor-api.onrender.com`
-- **Frontend**: `https://worldcup-predictor-frontend.onrender.com`
-
----
-
-## Step 4: Test Your Deployed App
-
-1. Open your frontend URL
-2. Try selecting teams and running predictions
-3. Try running a tournament simulation
+1. Vercel will give you a URL like: `https://your-app.vercel.app`
+2. Open it in your browser
+3. Test:
+   - ✅ Select teams from dropdowns
+   - ✅ Run match predictions
+   - ✅ Run tournament simulation
 
 ---
 
 ## Important Notes
 
-### Free Tier Limitations
-- **Backend**: Spins down after 15 minutes of inactivity
-  - First request after inactivity may take 30-60 seconds to wake up
-  - Subsequent requests will be fast
-- **Frontend**: Always available (static site)
+### Railway Free Tier
+- **$5 credit/month** (resets monthly)
+- Enough for ~500 hours of runtime
+- **No credit card required**
+- App stays active as long as you have credit
 
-### Custom Domain (Optional)
-You can add a custom domain in Render's settings for free!
+### Vercel Free Tier
+- **Unlimited** bandwidth
+- **100 GB** bandwidth/month
+- **No credit card required**
+- Always-on static hosting
+
+### First Load Delay
+- Railway may take 30-60 seconds on first request if inactive
+- Subsequent requests are instant
 
 ---
 
 ## Troubleshooting
 
-### Frontend can't connect to backend
-1. Check that `VITE_API_URL` environment variable is set correctly in frontend settings
-2. Make sure backend is deployed and running
-3. Check backend logs for errors
+**Frontend can't connect to backend:**
+1. Check `VITE_API_URL` is set correctly in Vercel
+2. Make sure Railway backend is running
+3. Check Railway logs for errors
 
-### Backend won't start
-1. Check build logs for Python dependency errors
-2. Verify `requirements.txt` is correct
-3. Make sure data files are included in the repository
+**Teams not loading:**
+1. Verify `backend/data/` folder has CSV files
+2. Check Railway deployment logs
 
-### Teams not loading
-- The backend needs the CSV data files in `backend/data/`
-- Make sure these files are committed to your GitHub repository
+**Railway deployment failed:**
+1. Make sure `backend/requirements.txt` exists
+2. Check Railway build logs for Python errors
 
 ---
 
-## Your Deployed URLs
+## Your Live URLs
 
-After deployment, your app will be live at:
-- **Frontend**: `https://worldcup-predictor-frontend.onrender.com`
-- **Backend API**: `https://worldcup-predictor-api.onrender.com`
+After deployment:
+- **Frontend**: `https://your-app.vercel.app`
+- **Backend**: `https://your-app.up.railway.app`
 
-Share the frontend URL with anyone to let them use your World Cup Predictor! 🎉
+Share your frontend URL with anyone! 🌍⚽
