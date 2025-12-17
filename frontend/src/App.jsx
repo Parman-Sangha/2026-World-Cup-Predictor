@@ -4,7 +4,7 @@ import { motion } from 'framer-motion';
 import clsx from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
-const API_URL = 'http://localhost:8000';
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 function cn(...inputs) {
   return twMerge(clsx(inputs));
