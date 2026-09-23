@@ -32,6 +32,13 @@ class MatchResponse(BaseModel):
 
 class SimulationResponse(BaseModel):
     team: str
+    group: str
+    round_of_32: float
+    round_of_16: float
+    quarterfinal: float
+    semifinal: float
+    final: float
+    champion: float
     title_prob: float
 
 @app.get("/teams", response_model=List[str])
@@ -43,11 +50,13 @@ def predict_match(request: MatchRequest):
     try:
         result = model.predict_match(request.team_a, request.team_b, request.host)
         return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/simulate", response_model=List[SimulationResponse])
-def simulate_tournament(n_iter: int = 1000):
+def simulate_tournament(n_iter: int = 10000):
     try:
         return model.simulate_tournament(n_iter=n_iter)
     except Exception as e:

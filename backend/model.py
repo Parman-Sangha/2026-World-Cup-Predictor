@@ -2,172 +2,275 @@ import math
 import os
 import numpy as np
 import pandas as pd
-from datetime import datetime
 
 # Constants
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
-MATCH_PATH = os.path.join(DATA_DIR, "matches_1930_2022.csv")
-RANK_PATH = os.path.join(DATA_DIR, "fifa_ranking_2022-10-06.csv")
+RESULTS_PATH = os.path.join(DATA_DIR, "results.csv")
+
+# Only train on matches played before the tournament kicked off, so the
+# predictions are genuine pre-tournament forecasts.
+CUTOFF = "2026-06-11"
+
 HOSTS_2026 = {"United States", "Mexico", "Canada"}
-HOST_BOOST = 70.0
+HOME_ADV = 100.0
+
+# K-factor by competition (World Football Elo convention).
+K_WORLD_CUP = 60.0
+K_CONTINENTAL = 50.0
+K_QUALIFIER = 40.0
+K_OTHER = 30.0
+K_FRIENDLY = 20.0
+CONTINENTAL_FINALS = {
+    "UEFA Euro", "Copa América", "African Cup of Nations", "AFC Asian Cup",
+    "Gold Cup", "CONCACAF Championship", "Oceania Nations Cup", "Confederations Cup",
+}
+
+# Official 2026 draw.
+GROUPS_2026 = {
+    "A": ["Mexico", "South Africa", "South Korea", "Czech Republic"],
+    "B": ["Canada", "Bosnia and Herzegovina", "Qatar", "Switzerland"],
+    "C": ["Brazil", "Morocco", "Haiti", "Scotland"],
+    "D": ["United States", "Paraguay", "Australia", "Turkey"],
+    "E": ["Germany", "Curaçao", "Ivory Coast", "Ecuador"],
+    "F": ["Netherlands", "Japan", "Sweden", "Tunisia"],
+    "G": ["Belgium", "Egypt", "Iran", "New Zealand"],
+    "H": ["Spain", "Cape Verde", "Saudi Arabia", "Uruguay"],
+    "I": ["France", "Senegal", "Iraq", "Norway"],
+    "J": ["Argentina", "Algeria", "Austria", "Jordan"],
+    "K": ["Portugal", "DR Congo", "Uzbekistan", "Colombia"],
+    "L": ["England", "Croatia", "Ghana", "Panama"],
+}
+
+# Round of 32 (matches 73-88). "1A" = winner of group A, "2A" = runner-up,
+# "3:ABCDF" = one of the best third-placed teams from those groups.
+ROUND_OF_32 = [
+    ("2A", "2B"), ("1E", "3:ABCDF"), ("1F", "2C"), ("1C", "2F"),
+    ("1I", "3:CDFGH"), ("2E", "2I"), ("1A", "3:CEFHI"), ("1L", "3:EHIJK"),
+    ("1D", "3:BEFIJ"), ("1G", "3:AEHIJ"), ("2K", "2L"), ("1H", "2J"),
+    ("1B", "3:EFGIJ"), ("1J", "2H"), ("1K", "3:DEIJL"), ("2D", "2G"),
+]
+# Later rounds as pairs of indexes into the previous round's winners.
+ROUND_OF_16 = [(1, 4), (0, 2), (3, 5), (6, 7), (10, 11), (8, 9), (13, 15), (12, 14)]
+QUARTERS = [(0, 1), (4, 5), (2, 3), (6, 7)]
+SEMIS = [(0, 1), (2, 3)]
+
+STAGES = ["round_of_32", "round_of_16", "quarterfinal", "semifinal", "final", "champion"]
+
+
+def k_factor(tournament: str) -> float:
+    if tournament == "FIFA World Cup":
+        return K_WORLD_CUP
+    if tournament in CONTINENTAL_FINALS:
+        return K_CONTINENTAL
+    if "qualification" in tournament or tournament == "UEFA Nations League":
+        return K_QUALIFIER
+    if tournament == "Friendly":
+        return K_FRIENDLY
+    return K_OTHER
+
+
+def goal_multiplier(goal_diff: int) -> float:
+    n = abs(goal_diff)
+    if n <= 1:
+        return 1.0
+    if n == 2:
+        return 1.5
+    return (11.0 + n) / 8.0
+
 
 class WorldCupModel:
-    def __init__(self):
+    def __init__(self, cutoff: str = CUTOFF):
+        self.cutoff = cutoff
         self.matches = None
-        self.fifa_rank = None
         self.elo_ratings = {}
-        self.rank_points = {}
-        self.rank_min = 0
-        self.rank_max = 0
-        self.draw_rate = 0.25
+        self.recent_teams = set()
+        # Ordered-logit outcome model, fitted in fit_outcome_model().
+        self.draw_margin = 60.0
+        self.scale = 400.0
         self.load_data()
         self.train_elo()
+        self.fit_outcome_model()
 
     def load_data(self):
-        self.matches = pd.read_csv(MATCH_PATH)
-        self.fifa_rank = pd.read_csv(RANK_PATH)
+        df = pd.read_csv(RESULTS_PATH, parse_dates=["date"])
+        df = df.dropna(subset=["home_score", "away_score"])
+        df = df[df["date"] < self.cutoff].sort_values("date").reset_index(drop=True)
+        df["home_score"] = df["home_score"].astype(int)
+        df["away_score"] = df["away_score"].astype(int)
+        self.matches = df
 
-        self.matches["Date"] = pd.to_datetime(self.matches["Date"])
-        self.matches = self.matches.sort_values("Date").reset_index(drop=True)
-        self.matches["result"] = np.where(
-            self.matches["home_score"] > self.matches["away_score"],
-            1.0,
-            np.where(self.matches["home_score"] < self.matches["away_score"], 0.0, 0.5),
-        )
+        # Teams active in the last 8 years; keeps defunct and non-FIFA sides out of the picker.
+        recent = df[df["date"] >= pd.Timestamp(self.cutoff) - pd.DateOffset(years=8)]
+        counts = pd.concat([recent["home_team"], recent["away_team"]]).value_counts()
+        self.recent_teams = set(counts[counts >= 10].index)
 
-        self.draw_rate = float((self.matches["result"] == 0.5).mean())
-        self.rank_points = self.fifa_rank.set_index("team")["points"].to_dict()
-        if self.rank_points:
-            self.rank_min, self.rank_max = min(self.rank_points.values()), max(self.rank_points.values())
-
-    def fallback_rating(self, team: str, base: float = 1500.0) -> float:
-        pts = self.rank_points.get(team)
-        if pts is None:
-            return base
-        return float(np.interp(pts, (self.rank_min, self.rank_max), (1400.0, 1900.0)))
-
-    def train_elo(
-        self,
-        base_rating: float = 1500.0,
-        k_base: float = 40.0,
-        decay_years: float = 20.0,
-        home_adv: float = 60.0,
-    ):
+    def train_elo(self, base_rating: float = 1500.0):
         ratings: dict[str, float] = {}
-        current_year = int(self.matches["Date"].dt.year.max())
-        
-        for row in self.matches.itertuples():
+        pre_diffs = np.empty(len(self.matches))
+
+        for i, row in enumerate(self.matches.itertuples()):
             ht, at = row.home_team, row.away_team
-            ratings.setdefault(ht, base_rating)
-            ratings.setdefault(at, base_rating)
+            ra = ratings.setdefault(ht, base_rating)
+            rb = ratings.setdefault(at, base_rating)
 
-            ra, rb = ratings[ht], ratings[at]
-            year = row.Date.year
-            k = k_base * math.exp(-(current_year - year) / decay_years) + 10.0
-            margin = max(1.0, math.log1p(abs(row.home_score - row.away_score)))
-
-            exp_home = 1.0 / (1.0 + 10 ** (-(ra + home_adv - rb) / 400.0))
+            diff = ra - rb + (0.0 if row.neutral else HOME_ADV)
+            pre_diffs[i] = diff
+            exp_home = 1.0 / (1.0 + 10 ** (-diff / 400.0))
             result_home = 1.0 if row.home_score > row.away_score else 0.5 if row.home_score == row.away_score else 0.0
 
-            delta = k * margin
-            ratings[ht] += delta * (result_home - exp_home)
-            ratings[at] += delta * ((1.0 - result_home) - (1.0 - exp_home))
+            delta = k_factor(row.tournament) * goal_multiplier(row.home_score - row.away_score) * (result_home - exp_home)
+            ratings[ht] += delta
+            ratings[at] -= delta
 
-        mean_rating = float(np.mean(list(ratings.values())))
-        shift = base_rating - mean_rating
-        self.elo_ratings = {team: rating + shift for team, rating in ratings.items()}
+        self.elo_ratings = ratings
+        self.matches["elo_diff"] = pre_diffs
+
+    def fit_outcome_model(self):
+        """Fit draw margin and scale by minimising log loss on competitive matches since 2010."""
+        m = self.matches
+        m = m[(m["date"] >= "2010-01-01") & (m["tournament"] != "Friendly")]
+        d = m["elo_diff"].to_numpy()
+        outcome = np.sign(m["home_score"].to_numpy() - m["away_score"].to_numpy())
+
+        best = None
+        for scale in np.arange(300.0, 601.0, 10.0):
+            for margin in np.arange(20.0, 151.0, 5.0):
+                pa, pd_, pb = self._outcome_probs(d, margin, scale)
+                p = np.where(outcome > 0, pa, np.where(outcome < 0, pb, pd_))
+                loss = -np.mean(np.log(np.clip(p, 1e-12, None)))
+                if best is None or loss < best[0]:
+                    best = (loss, margin, scale)
+        _, self.draw_margin, self.scale = best
+
+    @staticmethod
+    def _outcome_probs(diff, margin, scale):
+        pa = 1.0 / (1.0 + 10 ** (-(diff - margin) / scale))
+        pb = 1.0 / (1.0 + 10 ** ((diff + margin) / scale))
+        return pa, 1.0 - pa - pb, pb
 
     def rating_for(self, team: str) -> float:
-        return float(self.elo_ratings.get(team, self.fallback_rating(team)))
-
-    def draw_probability(self, rating_diff: float, draw_scale: float = 450.0) -> float:
-        return float(self.draw_rate * math.exp(-abs(rating_diff) / draw_scale))
+        if team not in self.elo_ratings:
+            raise ValueError(f"Unknown team: {team}")
+        return float(self.elo_ratings[team])
 
     def predict_match(self, team_a: str, team_b: str, host: str | None = None) -> dict:
         ra, rb = self.rating_for(team_a), self.rating_for(team_b)
-        boost_a = HOST_BOOST if host == team_a else 0.0
-        boost_b = HOST_BOOST if host == team_b else 0.0
+        boost_a = HOME_ADV if host == team_a else 0.0
+        boost_b = HOME_ADV if host == team_b else 0.0
 
         rating_diff = (ra + boost_a) - (rb + boost_b)
-        expected_a = 1.0 / (1.0 + 10 ** (-rating_diff / 400.0))
-
-        p_draw = self.draw_probability(rating_diff)
-        p_a = expected_a * (1.0 - p_draw)
-        p_b = (1.0 - expected_a) * (1.0 - p_draw)
+        p_a, p_draw, p_b = self._outcome_probs(rating_diff, self.draw_margin, self.scale)
 
         return {
             "team_a": team_a,
             "team_b": team_b,
-            "team_a_win": p_a,
-            "draw": p_draw,
-            "team_b_win": p_b,
+            "team_a_win": float(p_a),
+            "draw": float(p_draw),
+            "team_b_win": float(p_b),
             "rating_a": ra,
             "rating_b": rb,
             "rating_diff": rating_diff,
             "host": host or "neutral",
         }
 
-    def simulate_match(self, team_a: str, team_b: str, rng: np.random.Generator) -> str:
-        host = team_a if team_a in HOSTS_2026 else team_b if team_b in HOSTS_2026 else None
-        pred = self.predict_match(team_a, team_b, host=host)
-        roll = rng.random()
-        if roll < pred["team_a_win"]:
+    def _host_for(self, team_a: str, team_b: str) -> str | None:
+        # Hosts play all their matches at home; a host-vs-host tie is treated as neutral.
+        if team_a in HOSTS_2026 and team_b not in HOSTS_2026:
             return team_a
-        if roll < pred["team_a_win"] + pred["draw"]:
-            strength_a = pred["team_a_win"]
-            strength_b = pred["team_b_win"]
-            total = max(1e-9, strength_a + strength_b)
-            return team_a if rng.random() < strength_a / total else team_b
-        return team_b
+        if team_b in HOSTS_2026 and team_a not in HOSTS_2026:
+            return team_b
+        return None
 
-    def pair_and_play(self, teams: list[str], rng: np.random.Generator) -> list[str]:
-        rng.shuffle(teams)
-        winners = []
-        for i in range(0, len(teams), 2):
-            if i + 1 < len(teams):
-                winners.append(self.simulate_match(teams[i], teams[i + 1], rng))
-            else:
-                winners.append(teams[i]) # Odd number of teams, bye
-        return winners
+    @staticmethod
+    def _assign_thirds(slots: list[str], groups: list[str]) -> dict[str, str] | None:
+        """Match each third-place slot to a qualifying group it allows (backtracking)."""
+        if not slots:
+            return {}
+        slot, rest = slots[0], slots[1:]
+        for g in groups:
+            if g in slot:
+                sub = WorldCupModel._assign_thirds(rest, [x for x in groups if x != g])
+                if sub is not None:
+                    return {slot: g, **sub}
+        return None
 
-    def simulate_tournament(self, n_iter: int = 1000, random_state: int = 7) -> list[dict]:
-        # Get top 48 teams
-        team_pool = self.fifa_rank.sort_values("points", ascending=False).head(48)["team"].tolist()
-        
-        seeded = (
-            pd.DataFrame(
-                [{"team": t, "rating": self.rating_for(t)} for t in team_pool]
-            )
-            .sort_values("rating", ascending=False)
-            .reset_index(drop=True)
-        )
-        top16 = seeded.head(16)["team"].tolist()
-        prelim_field = seeded["team"].tolist()[16:]
+    def simulate_tournament(self, n_iter: int = 10000, random_state: int = 7) -> list[dict]:
+        teams = [t for group in GROUPS_2026.values() for t in group]
+        idx = {t: i for i, t in enumerate(teams)}
+
+        # Precompute (win, draw) probabilities for every pairing.
+        n = len(teams)
+        p_win = np.zeros((n, n))
+        p_draw = np.zeros((n, n))
+        for a in teams:
+            for b in teams:
+                if a != b:
+                    pred = self.predict_match(a, b, host=self._host_for(a, b))
+                    p_win[idx[a], idx[b]] = pred["team_a_win"]
+                    p_draw[idx[a], idx[b]] = pred["draw"]
 
         rng = np.random.default_rng(random_state)
-        counts: dict[str, int] = {}
-        
+        reached = np.zeros((n, len(STAGES)))
+
+        def knockout(a: int, b: int) -> int:
+            roll = rng.random()
+            if roll < p_win[a, b]:
+                return a
+            if roll < p_win[a, b] + p_draw[a, b]:
+                return a if rng.random() < 0.5 else b  # extra time / penalties
+            return b
+
         for _ in range(n_iter):
-            prelim_winners = self.pair_and_play(prelim_field.copy(), rng)
-            round_of_32 = top16 + prelim_winners
-            rng.shuffle(round_of_32)
+            placed = {}
+            thirds = []
+            for letter, group in GROUPS_2026.items():
+                ids = [idx[t] for t in group]
+                pts = {i: 0.0 for i in ids}
+                for x in range(4):
+                    for y in range(x + 1, 4):
+                        a, b = ids[x], ids[y]
+                        roll = rng.random()
+                        if roll < p_win[a, b]:
+                            pts[a] += 3
+                        elif roll < p_win[a, b] + p_draw[a, b]:
+                            pts[a] += 1
+                            pts[b] += 1
+                        else:
+                            pts[b] += 3
+                # Random jitter stands in for goal-difference tiebreakers.
+                order = sorted(ids, key=lambda i: pts[i] + rng.random() * 0.5, reverse=True)
+                placed[f"1{letter}"], placed[f"2{letter}"] = order[0], order[1]
+                thirds.append((pts[order[2]] + rng.random() * 0.5, letter, order[2]))
 
-            current = round_of_32
-            while len(current) > 1:
-                current = self.pair_and_play(current, rng)
-            champion = current[0]
-            counts[champion] = counts.get(champion, 0) + 1
+            thirds.sort(reverse=True)
+            best_thirds = {letter: team for _, letter, team in thirds[:8]}
+            third_slots = [b for _, b in ROUND_OF_32 if b.startswith("3:")]
+            assignment = self._assign_thirds(third_slots, sorted(best_thirds))
+            for slot, letter in assignment.items():
+                placed[slot] = best_thirds[letter]
 
-        results = [
-            {"team": t, "title_prob": wins / n_iter} for t, wins in counts.items()
-        ]
+            current = [(placed[a], placed[b]) for a, b in ROUND_OF_32]
+            for a, b in current:
+                reached[[a, b], 0] += 1
+            winners = [knockout(a, b) for a, b in current]
+            for stage, bracket in enumerate([ROUND_OF_16, QUARTERS, SEMIS, [(0, 1)]], start=1):
+                reached[winners, stage] += 1
+                winners = [knockout(winners[i], winners[j]) for i, j in bracket]
+            reached[winners[0], 5] += 1
+
+        results = []
+        for t in teams:
+            row = {"team": t, "group": next(g for g, ts in GROUPS_2026.items() if t in ts)}
+            for s, stage in enumerate(STAGES):
+                row[stage] = float(reached[idx[t], s] / n_iter)
+            row["title_prob"] = row["champion"]
+            results.append(row)
         results.sort(key=lambda x: x["title_prob"], reverse=True)
         return results
 
     def get_all_teams(self) -> list[str]:
-        # Return all teams that have a rating or ranking
-        teams = set(self.elo_ratings.keys()) | set(self.rank_points.keys())
-        return sorted(list(teams))
+        return sorted(self.recent_teams & set(self.elo_ratings))
+
 
 # Singleton instance
 model = WorldCupModel()

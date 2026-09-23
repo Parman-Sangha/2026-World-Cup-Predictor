@@ -15,13 +15,13 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 font-sans selection:bg-cyan-500 selection:text-white">
-      <div className="max-w-4xl mx-auto px-4 py-12">
+      <div className="max-w-5xl mx-auto px-4 py-12">
         <header className="text-center mb-12">
           <h1 className="text-5xl font-extrabold bg-gradient-to-r from-cyan-400 to-blue-600 bg-clip-text text-transparent mb-4">
             2026 World Cup Predictor
           </h1>
           <p className="text-slate-400 text-lg">
-            AI-powered match predictions and tournament simulations.
+            Elo-based match predictions and tournament simulations, trained on 49,000 international matches.
           </p>
         </header>
 
@@ -173,14 +173,23 @@ function MatchPredictor() {
   );
 }
 
+const STAGE_COLUMNS = [
+  ['round_of_16', 'R16'],
+  ['quarterfinal', 'QF'],
+  ['semifinal', 'SF'],
+  ['final', 'Final'],
+  ['champion', 'Win'],
+];
+
 function TournamentSim() {
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [showAll, setShowAll] = useState(false);
 
   const runSim = async () => {
     setLoading(true);
     try {
-      const res = await axios.get(`${API_URL}/simulate?n_iter=1000`);
+      const res = await axios.get(`${API_URL}/simulate?n_iter=10000`);
       setResults(res.data);
     } catch (err) {
       console.error(err);
@@ -193,7 +202,8 @@ function TournamentSim() {
     <div className="bg-slate-800/50 backdrop-blur-xl p-8 rounded-2xl border border-slate-700 shadow-xl">
       <div className="text-center mb-8">
         <p className="text-slate-400 mb-6">
-          Run a Monte Carlo simulation (1000 iterations) to project the winner of the 2026 World Cup.
+          Simulate the real 2026 format 10,000 times: the 12 official groups, the top two plus the
+          8 best third-placed teams, and the Round of 32 bracket through to the final.
         </p>
         <button
           onClick={runSim}
@@ -208,36 +218,46 @@ function TournamentSim() {
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          className="overflow-hidden rounded-xl border border-slate-700"
+          className="overflow-x-auto rounded-xl border border-slate-700"
         >
           <table className="w-full text-left border-collapse">
             <thead className="bg-slate-900 text-slate-400 uppercase text-xs font-semibold">
               <tr>
                 <th className="p-4">Rank</th>
                 <th className="p-4">Team</th>
-                <th className="p-4 text-right">Win Probability</th>
+                {STAGE_COLUMNS.map(([, label]) => (
+                  <th key={label} className="p-4 text-right">{label}</th>
+                ))}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-700 bg-slate-800">
-              {results.slice(0, 10).map((row, i) => (
+              {results.slice(0, showAll ? results.length : 16).map((row, i) => (
                 <tr key={row.team} className="hover:bg-slate-700/50 transition-colors">
                   <td className="p-4 text-slate-500 font-mono">#{i + 1}</td>
-                  <td className="p-4 font-bold text-white">{row.team}</td>
-                  <td className="p-4 text-right">
-                    <span className={cn(
-                      "px-2 py-1 rounded text-sm font-bold",
-                      i === 0 ? "bg-yellow-500/20 text-yellow-400" : "text-slate-300"
-                    )}>
-                      {(row.title_prob * 100).toFixed(1)}%
-                    </span>
+                  <td className="p-4 font-bold text-white whitespace-nowrap">
+                    {row.team}
+                    <span className="ml-2 text-xs font-normal text-slate-500">Group {row.group}</span>
                   </td>
+                  {STAGE_COLUMNS.map(([key]) => (
+                    <td key={key} className="p-4 text-right font-mono text-sm">
+                      <span className={cn(
+                        key === 'champion' ? "px-2 py-1 rounded font-bold" : "text-slate-300",
+                        key === 'champion' && i === 0 ? "bg-yellow-500/20 text-yellow-400" : key === 'champion' && "text-white"
+                      )}>
+                        {(row[key] * 100).toFixed(1)}%
+                      </span>
+                    </td>
+                  ))}
                 </tr>
               ))}
             </tbody>
           </table>
-          <div className="bg-slate-900 p-3 text-center text-xs text-slate-500">
-            Showing top 10 contenders
-          </div>
+          <button
+            onClick={() => setShowAll(!showAll)}
+            className="w-full bg-slate-900 p-3 text-center text-xs text-slate-400 hover:text-white transition-colors"
+          >
+            {showAll ? 'Show top 16' : `Show all ${results.length} teams`}
+          </button>
         </motion.div>
       )}
     </div>
